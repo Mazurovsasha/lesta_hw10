@@ -17,31 +17,38 @@ data:
       - url: http://loki.loki.svc.cluster.local:3100/loki/api/v1/push
 
     scrape_configs:
-      - job_name: kubernetes-pods
-        kubernetes_sd_configs:
-          - role: pod
-        relabel_configs:
-          - source_labels: [__meta_kubernetes_namespace]
-            target_label: namespace
-          - source_labels: [__meta_kubernetes_pod_name]
-            target_label: pod
-          - source_labels: [__meta_kubernetes_pod_container_name]
-            target_label: container
-          - source_labels: [__meta_kubernetes_pod_node_name]
-            target_label: node
-          - action: replace
-            source_labels: [__meta_kubernetes_pod_container_name]
-            target_label: __path__
-            replacement: /var/log/pods/*/*/*.log
-
       - job_name: system
         static_configs:
           - targets:
               - localhost
             labels:
               job: varlogs
-              __path__: /var/log/*.log
+              __path__: /var/log/*log
 
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            action: replace
+            target_label: __host__
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: container
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: app
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - source_labels: [__meta_kubernetes_pod_annotation_log_format]
+            target_label: log_format
+          - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_pod_name, __meta_kubernetes_pod_container_name]
+            action: replace
+            regex: (.+);(.+);(.+)
+            replacement: /var/log/pods/$1_$2_*/$3/*.log
+            target_label: __path__
 ---
 apiVersion: v1
 kind: PersistentVolume
@@ -55,7 +62,6 @@ spec:
   hostPath:
     path: /mnt/data/promtail/positions
   storageClassName: local-path
-
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -69,7 +75,34 @@ spec:
     requests:
       storage: 1Gi
   storageClassName: local-path
-
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: promtail
+  namespace: loki
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: promtail
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: promtail
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: promtail
+subjects:
+  - kind: ServiceAccount
+    name: promtail
+    namespace: loki
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -85,7 +118,7 @@ spec:
       labels:
         name: promtail
     spec:
-      serviceAccountName: default
+      serviceAccountName: promtail
       initContainers:
         - name: fix-permissions
           image: busybox
@@ -95,7 +128,7 @@ spec:
               mountPath: /tmp
       containers:
         - name: promtail
-          image: grafana/promtail:latest
+          image: grafana/promtail:3.0.0
           args:
             - -config.file=/etc/promtail/config.yaml
           volumeMounts:
@@ -103,14 +136,14 @@ spec:
               mountPath: /etc/promtail
             - name: positions
               mountPath: /tmp
-            - name: podlogs
-              mountPath: /var/log/pods
-              readOnly: true
             - name: varlog
               mountPath: /var/log
               readOnly: true
-            - name: dockersock
-              mountPath: /var/run/docker.sock
+            - name: pods
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: containers
+              mountPath: /var/lib/docker/containers
               readOnly: true
       volumes:
         - name: config
@@ -119,12 +152,13 @@ spec:
         - name: positions
           persistentVolumeClaim:
             claimName: promtail-positions-pvc
-        - name: podlogs
-          hostPath:
-            path: /var/log/pods
         - name: varlog
           hostPath:
             path: /var/log
-        - name: dockersock
+        - name: pods
           hostPath:
-            path: /var/run/docker.sock
+            path: /var/log/pods
+        - name: containers
+          hostPath:
+            path: /var/lib/docker/containers
+
