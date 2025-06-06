@@ -25,6 +25,14 @@ data:
               job: varlogs
               __path__: /var/log/*log
 
+      - job_name: kubernetes-containers
+        static_configs:
+          - targets:
+              - localhost
+            labels:
+              job: kubernetes-containers
+              __path__: /var/log/containers/*.log
+
       - job_name: kubernetes-pods
         kubernetes_sd_configs:
           - role: pod
@@ -161,4 +169,3 @@ spec:
         - name: containers
           hostPath:
             path: /var/lib/docker/containers
-
